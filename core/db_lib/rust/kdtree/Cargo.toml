@@ -1,0 +1,14 @@
+[package]
+name = "kdtree"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module"] }
+vectordb_core = { path = "../core", package = "core", features = ["simd"] }
+ordered-float = "4.2"
+ndarray = "0.16"
+
+[lib]
+name = "kdtree"
+crate-type = ["cdylib"]

@@ -1,0 +1,294 @@
+# 向量相似度搜索引擎+向量数据库项目设计
+
+## 1. 项目概述
+
+本项目旨在构建一个高效的向量相似度搜索引擎和向量数据库系统，支持多种文件类型的处理、向量嵌入、存储和检索。系统采用模块化设计，具有良好的可扩展性和可维护性。
+
+### 开发原则：
+- 任何时候都不会为了通过测试用例而修改正确的业务代码
+- 如果调试时，大模型无法下载或者访问，尝试换新模型，不要使用“虚拟模型”等操作，必须使用真实模型。
+
+## 2. 架构设计
+
+### 2.1 核心组件
+
+#### 2.1.1 文件处理模块
+- **基类：BaseDocumentReader**
+  - 方法：read(), extract_metadata(), get_content()
+  - 属性：file_path, file_type, metadata
+- **子类实现**
+  - TextDocumentReader：处理文本文件（txt, md, docx, pdf等）
+  - ImageDocumentReader：处理图像文件（jpg, png, bmp等）
+  - VideoDocumentReader：处理视频文件（mp4, avi, mov等）
+  - AudioDocumentReader：处理音频文件（mp3, wav等）
+
+#### 2.1.2 元数据管理模块
+- **全部元数据**：存储在普通数据库/键值存储中
+  - 接口：MetadataStorageInterface
+  - 实现：MySQLStorage, RedisStorage, MongoDBStorage
+- **核心元数据**：与向量一起存储
+  - 包含：file_id, file_type, collection_id, timestamp, hash
+
+#### 2.1.3 原始文件存储模块
+- **接口：FileStorageInterface**
+- **实现**：
+  - LocalFileSystemStorage
+  - ObjectStorage（S3, OSS等）
+  - DatabaseStorage
+
+#### 2.1.4 处理流程模块
+- **基类：BaseProcessor**
+  - 方法：chunk(), clean(), embed()
+- **子类实现**：
+  - TextProcessor：文本分词、清洗、嵌入
+  - ImageProcessor：图像特征提取、嵌入
+  - VideoProcessor：视频帧提取、特征嵌入
+
+#### 2.1.5 LLM接口模块
+- **接口：LLMInterface**
+- **实现**：
+  - LocalLLM：本地模型调用
+  - RemoteLLM：远端API调用（OpenAI, Claude等）
+
+#### 2.1.6 向量数据库模块
+- **基类：BaseVectorDB**
+  - 方法：create_collection(), insert(), search(), modify(), delete()
+- **子类实现**：
+  - HNSWVectorDB：基于HNSW算法
+  - FAISSVectorDB：基于FAISS库
+  - AnnoyVectorDB：基于Annoy算法
+
+### 2.2 数据流程
+
+1. **文件输入**：用户输入文件路径或批量文件
+2. **文件读取**：使用对应文件类型的Reader读取文件
+3. **元数据提取**：生成全部元数据和核心元数据
+4. **原始文件存储**：存储到指定的存储介质
+5. **处理流程**：
+   - Chunking：将文件内容分块
+   - Cleaning：清洗数据
+   - Embedding：生成向量嵌入
+6. **向量存储**：将向量和核心元数据存储到向量数据库
+7. **检索流程**：
+   - 接收查询向量
+   - 在指定集合分区中检索
+   - 应用metadata过滤
+   - 返回核心元数据
+   - 通过核心元数据获取全部元数据
+   - 通过全部元数据获取原始文件
+
+## 3. 向量数据库核心设计
+
+### 3.1 集合与分区
+- **全局大集合**：只创建1个大集合
+- **分区策略**：为每个集合创建1个独立分区，使用collection_id作为分区标识
+- **向量插入**：插入到对应分区
+- **检索策略**：指定只检索该集合的分区 + 轻量metadata过滤
+
+### 3.2 存储结构
+- **向量存储**：存储向量数据
+- **核心元数据**：与向量存储在一起
+- **索引结构**：根据选择的算法构建高效索引
+
+### 3.3 操作接口
+- **创建合集**：create_collection(collection_id, dimension)
+- **插入向量**：insert(collection_id, vectors, metadata)
+- **相似度搜索**：search(collection_id, query_vector, top_k, filters)
+- **删除向量**：delete(collection_id, vector_ids)
+- **更新向量**：update(collection_id, vector_id, vector, metadata)
+
+### 3.4 客户端-服务器架构
+- **客户端**：使用Python编写，提供简洁的API接口
+- **服务器**：后端向量数据库服务，根据配置文件调用指定的向量数据库实现
+- **通信协议**：支持RESTful API或gRPC
+
+## 4. 数据处理流程优化
+
+### 4.1 子流程基类设计
+- **基类**：每个子流程都有独立的基类，定义必要的函数接口
+- **子类实现**：
+  - 传统方法实现：使用规则和算法处理
+  - AI模型实现：使用大模型进行处理
+
+### 4.2 流程配置管理
+- **配置文件**：.env文件中配置所有大模型和处理流程的参数
+- **默认值**：未设置的配置项有合理的默认值
+- **模型管理**：
+  - 本地模型：检查本地是否存在模型文件，不存在则自动下载并启动
+  - 远程模型：直接调用远程API
+
+### 4.3 模型配置示例
+```
+# .env配置文件示例
+# 文本分词模型
+TEXT_PROCESSING_MODEL_TYPE=remote
+TEXT_PROCESSING_MODEL_NAME=gpt-3.5-turbo
+TEXT_PROCESSING_API_KEY=your_api_key
+
+# 图像分词模型
+IMAGE_PROCESSING_MODEL_TYPE=local
+IMAGE_PROCESSING_MODEL_NAME=clip-vit-base-patch32
+IMAGE_PROCESSING_MODEL_PATH=./models/image
+
+# 文本清洗模型
+TEXT_PROCESSING_MODEL_TYPE=remote
+TEXT_PROCESSING_MODEL_NAME=gpt-3.5-turbo
+TEXT_PROCESSING_API_KEY=your_api_key
+
+# 图像清洗模型
+IMAGE_PROCESSING_MODEL_TYPE=local
+IMAGE_PROCESSING_MODEL_NAME=clip-vit-base-patch32
+IMAGE_PROCESSING_MODEL_PATH=./models/image
+
+# 向量嵌入模型
+EMBEDDING_MODEL_TYPE=local  # local或remote
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_MODEL_PATH=./models/embedding
+EMBEDDING_API_KEY=
+
+# 向量数据库配置
+VECTOR_DB_TYPE=faiss  # faiss, hnsw, annoy
+VECTOR_DB_PATH=./data/vector_db
+```
+
+## 5. 技术栈选择
+
+- **编程语言**：Python
+- **文件处理库**：
+  - 文本：pdfplumber, python-docx
+  - 图像：Pillow, OpenCV
+  - 视频：OpenCV, moviepy
+- **向量嵌入**：
+  - 文本：Sentence-BERT, OpenAI Embeddings
+  - 图像：CLIP, ResNet
+  - 视频：I3D, C3D
+- **向量数据库**：
+  - 自研实现
+  - 或集成现有库（FAISS, Annoy, HNSWlib）
+- **存储**：
+  - 元数据：MySQL, Redis, MongoDB
+  - 原始文件：本地文件系统, S3, OSS
+
+## 6. 系统功能
+
+### 6.1 文件管理
+- 单文件上传
+- 批量文件上传
+- 文件元数据管理
+- 文件版本控制
+
+### 6.2 向量管理
+- 向量生成
+- 向量存储
+- 向量更新
+- 向量删除
+
+### 6.3 检索功能
+- 相似度搜索
+- 元数据过滤
+- 混合检索（文本+向量）
+- 跨模态检索
+
+### 6.4 系统管理
+- 用户管理
+- 权限控制
+- 日志管理
+- 性能监控
+
+## 7. 扩展性设计
+
+- **插件系统**：支持自定义处理器、存储后端
+- **API接口**：RESTful API, gRPC
+- **集群部署**：支持分布式部署
+- **多模型支持**：可切换不同的模型来做流程处理
+
+## 8. 性能优化
+
+- **批处理**：批量插入向量
+- **索引优化**：根据数据量调整索引参数
+- **缓存策略**：缓存热点数据
+- **并行处理**：多线程/多进程处理
+
+## 9. 安全考虑
+
+- **数据加密**：存储加密
+- **访问控制**：基于角色的权限管理
+- **API认证**：API密钥, JWT
+- **数据备份**：定期备份策略
+
+## 10. 项目结构
+
+```
+vector_db/
+├── core/
+│   ├── readers/
+│   ├── processors/
+│   ├── storage/
+│   ├── vector_db/
+│   └── llm/
+├── api/
+├── config/
+│   └── .env.example
+├── utils/
+├── tests/
+└── main.py
+```
+
+## 11. 开发计划
+
+1. **基础架构搭建**：核心模块实现
+2. **文件处理模块**：支持多种文件类型
+3. **向量数据库实现**：基础存储和检索
+4. **API接口开发**：RESTful API
+5. **配置管理**：实现.env配置系统
+6. **模型管理**：实现本地模型下载和启动
+7. **测试与优化**：性能测试和优化
+8. **部署与集成**：部署到生产环境
+
+## 12. 预期成果
+
+- 一个功能完整的向量相似度搜索引擎和向量数据库
+- 支持多种文件类型的处理和检索
+- 高性能的向量存储和检索能力
+- 良好的可扩展性和可维护性
+- 完整的API接口和文档
+- 灵活的配置系统，支持本地和远程模型
+
+## 13. 技术挑战
+
+- 多模态数据的统一处理
+- 大规模向量的高效存储和检索
+- 不同文件类型的特征提取
+- 系统性能优化
+- 分布式部署和扩展
+- 本地模型的自动下载和管理
+
+## 14. 应用场景
+
+- 文档相似度搜索
+- 图像/视频检索
+- 推荐系统
+- 问答系统
+- 知识图谱构建
+- 内容审核
+
+## 15. 关键成功指标
+
+- 检索准确率
+- 检索速度
+- 系统吞吐量
+- 资源利用率
+- 可扩展性
+- 配置灵活性
+
+## 16. 风险评估
+
+- 数据处理性能瓶颈
+- 向量存储成本
+- 模型选择和适配
+- 系统稳定性
+- 本地模型下载和管理的可靠性
+
+## 17. 结论
+
+本项目设计了一个功能完整、架构合理的向量相似度搜索引擎和向量数据库系统，采用模块化设计和接口分离原则，具有良好的可扩展性和可维护性。通过合理的技术选型、性能优化和灵活的配置系统，可以满足各种应用场景的需求，支持本地和远程模型的无缝切换，为用户提供高效、可靠的向量搜索服务。

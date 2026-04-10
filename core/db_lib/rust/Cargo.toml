@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "core",
+    "flat",
+    "flat_ip",
+    "ivf",
+    "hnsw",
+    "pq",
+    "lsh",
+    "kdtree",
+    "balltree",
+    "annoy",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

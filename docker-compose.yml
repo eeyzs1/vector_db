@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  vector-db:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    environment:
+      - EMBEDDING_MODEL_NAME=shibing624/text2vec-base-chinese
+      - IMAGE_PROCESSING_MODEL_NAME=OFA-Sys/chinese-clip-vit-base-patch16
+      - VECTOR_DB_TYPE=faiss
+      - VECTOR_DB_PATH=/app/data/vector_db
+      - LOCAL_STORAGE_PATH=/app/data/files
+      - BACKUP_PATH=/app/data/backups
+      - API_SECRET_KEY=your-api-secret-key
+    restart: always

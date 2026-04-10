@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences
+POST,/api/vector/insert,"ConnectionRefusedError(10061, '[WinError 10061] No connection could be made because the target machine actively refused it.')",38
+POST,/api/process/text,"ConnectionRefusedError(10061, '[WinError 10061] No connection could be made because the target machine actively refused it.')",24
+POST,/api/vector/search,"ConnectionRefusedError(10061, '[WinError 10061] No connection could be made because the target machine actively refused it.')",30

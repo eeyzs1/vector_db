@@ -1,0 +1,1 @@
+This is an example text file for testing the vector database system. It contains some sample text that will be processed and embedded into vectors. The system should be able to read this file, extract metadata, process the content, and store it in the vector database. This is a test of the text processing capabilities of the system.

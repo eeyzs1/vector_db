@@ -1,0 +1,15 @@
+[package]
+name = "lsh"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module"] }
+vectordb_core = { path = "../core", package = "core", features = ["simd"] }
+rand = "0.8"
+rand_distr = "0.4"
+ndarray = "0.16"
+
+[lib]
+name = "lsh"
+crate-type = ["cdylib"]

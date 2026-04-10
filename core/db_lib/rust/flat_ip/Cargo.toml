@@ -1,0 +1,22 @@
+[package]
+name = "flat-ip"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.26.0", features = ["extension-module"] }
+vectordb_core = { path = "../core", package = "core", features = ["simd"] }
+rayon = "1.10.0"
+num_cpus = "1.16.0"
+
+[lib]
+name = "flat_ip"
+crate-type = ["cdylib", "lib"]
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[dev-dependencies]
+criterion = "0.5.1"
+rand = "0.8.5"
