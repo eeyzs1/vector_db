@@ -47,6 +47,6 @@ PYBIND11_MODULE(_flat, m) {
 
             return std::make_tuple(distances, labels);
         }, py::arg("x"), py::arg("k"), "Search for nearest neighbors")
-        .def_property_readonly("ntotal", [](IndexFlatL2& self) { return self.ntotal; }, "Get the number of vectors in the index")
+        .def_property_readonly("ntotal", [](IndexFlatL2& self) { return self.get_ntotal(); }, "Get the number of vectors in the index")
         .def("get_dimension", &IndexFlatL2::get_dimension, "Get the dimension of the vectors");
 }

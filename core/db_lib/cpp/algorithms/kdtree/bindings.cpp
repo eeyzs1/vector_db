@@ -5,7 +5,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_kdtree, m) {
+PYBIND11_MODULE(_kdtree, m) {
     m.doc() = "VectorDB KD-Tree Index Module";
 
     py::class_<IndexKDTree>(m, "IndexKDTree")

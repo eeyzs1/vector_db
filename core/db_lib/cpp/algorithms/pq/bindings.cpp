@@ -5,7 +5,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_pq, m) {
+PYBIND11_MODULE(_pq, m) {
     m.doc() = "VectorDB PQ Index Module";
 
     py::class_<IndexPQ>(m, "IndexPQ")

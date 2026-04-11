@@ -5,7 +5,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_annoy, m) {
+PYBIND11_MODULE(_annoy, m) {
     m.doc() = "VectorDB Annoy Index Module";
 
     py::class_<IndexAnnoy>(m, "IndexAnnoy")

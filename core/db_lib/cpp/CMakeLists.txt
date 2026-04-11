@@ -10,8 +10,10 @@ option(USE_OPENBLAS "Enable OpenBLAS for matrix operations" ON)
 option(BUILD_TESTS "Build unit tests with GoogleTest" ON)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native")
 endif()
+
+find_package(OpenMP)
 
 find_package(Python3 COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
@@ -63,6 +65,9 @@ pybind11_add_module(_hnsw
 target_link_libraries(_hnsw PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_hnsw PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_hnsw PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/hnsw
@@ -75,6 +80,9 @@ pybind11_add_module(_pq
 target_link_libraries(_pq PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_pq PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_pq PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/pq

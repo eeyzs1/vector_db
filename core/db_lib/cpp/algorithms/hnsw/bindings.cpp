@@ -5,7 +5,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_hnsw, m) {
+PYBIND11_MODULE(_hnsw, m) {
     m.doc() = "VectorDB HNSW Index Module";
 
     py::class_<IndexHNSW>(m, "IndexHNSW")

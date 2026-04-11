@@ -5,7 +5,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_balltree, m) {
+PYBIND11_MODULE(_balltree, m) {
     m.doc() = "VectorDB Ball-Tree Index Module";
 
     py::class_<IndexBallTree>(m, "IndexBallTree")

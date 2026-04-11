@@ -16,10 +16,14 @@ private:
     size_t ksub_;
     std::vector<float> codebooks_;
     std::vector<uint8_t> codes_;
+    mutable std::vector<uint8_t> codes_transposed_;
+    std::vector<float> centroid_norms_;
+    std::vector<float> codebooks_t_;
+    mutable bool codes_dirty_;
 
     void train_kmeans(size_t m, const float* x, size_t n, float* centroids);
     void encode_vector(const float* x, uint8_t* code) const;
-    float compute_distance(const uint8_t* code_a, const uint8_t* code_b) const;
+    void build_transposed_codes() const;
 
 public:
     IndexPQ(size_t dimension, size_t M = 8, size_t nbits = 8);

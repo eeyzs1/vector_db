@@ -6,7 +6,7 @@
 namespace py = pybind11;
 using namespace vectordb::algorithms;
 
-PYBIND11_MODULE(vectordb_ivf, m) {
+PYBIND11_MODULE(_ivf, m) {
     m.doc() = "IVF (Inverted File) index implementation";
 
     py::class_<IndexIVF>(m, "IndexIVF")
