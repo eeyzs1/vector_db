@@ -1,9 +1,10 @@
 import sys
+import os
 import time
 import importlib.util
 import numpy as np
 
-BASE_DIR = "/home/eeyzs1/AI_Generated_Projects/7vec_db/vector_db/core/db_lib"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def load_cpp_module(file_name, module_name):
     so_path = f"{BASE_DIR}/python/vectordb/cpp/{file_name}.cpython-314-x86_64-linux-gnu.so"

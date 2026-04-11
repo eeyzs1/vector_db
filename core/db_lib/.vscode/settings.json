@@ -2,5 +2,5 @@
     "python-envs.pythonProjects": [
         
     ],
-    "cmake.sourceDirectory": "/home/eeyzs1/AI_Generated_Projects/7vec_db/vector_db/core/db_lib/cpp"
+    "cmake.sourceDirectory": "cpp"
 }
