@@ -25,6 +25,7 @@ private:
     std::vector<size_t> cluster_vector_offsets_;
     std::vector<size_t> cluster_vector_sizes_;
     std::vector<size_t> cluster_original_ids_;
+    std::vector<float> cluster_vector_norms_;
     bool layout_built_;
 
     void kmeans_pp_init(size_t n, const float* x, std::mt19937& gen);

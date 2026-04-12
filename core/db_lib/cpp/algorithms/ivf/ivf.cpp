@@ -3,6 +3,7 @@
 #include <limits>
 #include <cstring>
 #include <numeric>
+#include <immintrin.h>
 
 namespace vectordb {
 namespace algorithms {
@@ -161,16 +162,22 @@ void IndexIVF::build_cluster_layout() {
 
     cluster_vectors_.resize(total * d);
     cluster_original_ids_.resize(total);
+    cluster_vector_norms_.resize(total);
 
     for (size_t i = 0; i < nlist_; ++i) {
         size_t offset = cluster_vector_offsets_[i];
         size_t size = cluster_vector_sizes_[i];
         for (size_t j = 0; j < size; ++j) {
             size_t orig_idx = inverted_lists_[i][j];
-            std::copy(data() + orig_idx * d,
-                      data() + (orig_idx + 1) * d,
-                      cluster_vectors_.data() + (offset + j) * d);
+            const float* vec = data() + orig_idx * d;
+            std::copy(vec, vec + d, cluster_vectors_.data() + (offset + j) * d);
             cluster_original_ids_[offset + j] = orig_idx;
+
+            float norm = 0.0f;
+            for (size_t k = 0; k < d; ++k) {
+                norm += vec[k] * vec[k];
+            }
+            cluster_vector_norms_[offset + j] = norm;
         }
     }
 
@@ -207,135 +214,74 @@ void IndexIVF::search(size_t n, const float* x, size_t k, float* distances, size
     }
 
     size_t nprobe = std::min(nprobe_, nlist_);
-    size_t num_threads = 1;
+    size_t dim = d;
 
-    if (n > 10) {
-        num_threads = std::min(std::thread::hardware_concurrency(), static_cast<unsigned int>(n));
-        if (num_threads < 1) num_threads = 1;
-    }
+    #pragma omp parallel
+    {
+        std::vector<std::pair<float, size_t>> cluster_dists(nlist_);
+        std::vector<std::pair<float, size_t>> heap;
+        heap.reserve(k + 1);
 
-    if (num_threads <= 1 || n <= 10) {
+        #pragma omp for schedule(dynamic, 1)
         for (size_t q = 0; q < n; ++q) {
-            const float* query = x + q * d;
+            const float* query = x + q * dim;
             float* q_dists = distances + q * k;
             size_t* q_labels = labels + q * k;
 
-            for (size_t i = 0; i < k; ++i) {
-                q_dists[i] = std::numeric_limits<float>::max();
-                q_labels[i] = 0;
-            }
-
-            std::vector<std::pair<float, size_t>> cluster_dists(nlist_);
             for (size_t i = 0; i < nlist_; ++i) {
-                const float* centroid = centroids_.data() + i * d;
-                float dist = distance::compute_l2_distance(query, centroid, d);
+                const float* centroid = centroids_.data() + i * dim;
+                float dist = distance::compute_l2_distance(query, centroid, dim);
                 cluster_dists[i] = {dist, i};
             }
 
-            std::partial_sort(cluster_dists.begin(),
-                              cluster_dists.begin() + nprobe,
-                              cluster_dists.end());
+            std::nth_element(cluster_dists.begin(),
+                             cluster_dists.begin() + nprobe,
+                             cluster_dists.end());
+
+            heap.clear();
 
             for (size_t c = 0; c < nprobe; ++c) {
                 size_t cluster = cluster_dists[c].second;
                 size_t offset = cluster_vector_offsets_[cluster];
                 size_t list_size = cluster_vector_sizes_[cluster];
 
-                const float* cluster_data = cluster_vectors_.data() + offset * d;
+                if (list_size == 0) continue;
+
+                const float* cluster_data = cluster_vectors_.data() + offset * dim;
                 const size_t* cluster_ids = cluster_original_ids_.data() + offset;
+                const float* cluster_norms = cluster_vector_norms_.data() + offset;
+
+                float cutoff = (heap.size() >= k) ? heap.front().first : std::numeric_limits<float>::max();
 
                 for (size_t j = 0; j < list_size; ++j) {
-                    const float* vec = cluster_data + j * d;
-                    float dist = distance::compute_l2_distance(query, vec, d);
+                    float dist = distance::compute_l2_distance(query, cluster_data + j * dim, dim);
 
-                    if (dist < q_dists[k - 1]) {
-                        size_t pos = k - 1;
-                        while (pos > 0 && dist < q_dists[pos - 1]) {
-                            q_dists[pos] = q_dists[pos - 1];
-                            q_labels[pos] = q_labels[pos - 1];
-                            pos--;
+                    if (dist < cutoff) {
+                        if (heap.size() < k) {
+                            heap.push_back({dist, cluster_ids[j]});
+                            std::push_heap(heap.begin(), heap.end(), std::greater<>());
+                            if (heap.size() >= k) cutoff = heap.front().first;
+                        } else {
+                            std::pop_heap(heap.begin(), heap.end(), std::greater<>());
+                            heap.back() = {dist, cluster_ids[j]};
+                            std::push_heap(heap.begin(), heap.end(), std::greater<>());
+                            cutoff = heap.front().first;
                         }
-                        q_dists[pos] = dist;
-                        q_labels[pos] = cluster_ids[j];
                     }
                 }
             }
 
+            std::sort(heap.begin(), heap.end());
+
             for (size_t i = 0; i < k; ++i) {
-                if (q_dists[i] == std::numeric_limits<float>::max()) {
+                if (i < heap.size()) {
+                    q_dists[i] = heap[i].first;
+                    q_labels[i] = heap[i].second;
+                } else {
                     q_dists[i] = 0.0f;
                     q_labels[i] = 0;
                 }
             }
-        }
-    } else {
-        std::vector<std::thread> threads;
-        size_t queries_per_thread = (n + num_threads - 1) / num_threads;
-
-        for (size_t t = 0; t < num_threads; ++t) {
-            size_t start = t * queries_per_thread;
-            size_t end = std::min(start + queries_per_thread, n);
-            if (start >= end) break;
-
-            threads.emplace_back([this, start, end, x, k, nprobe, distances, labels]() {
-                for (size_t q = start; q < end; ++q) {
-                    const float* query = x + q * d;
-                    float* q_dists = distances + q * k;
-                    size_t* q_labels = labels + q * k;
-
-                    for (size_t i = 0; i < k; ++i) {
-                        q_dists[i] = std::numeric_limits<float>::max();
-                        q_labels[i] = 0;
-                    }
-
-                    std::vector<std::pair<float, size_t>> cluster_dists(nlist_);
-                    for (size_t i = 0; i < nlist_; ++i) {
-                        const float* centroid = centroids_.data() + i * d;
-                        float dist = distance::compute_l2_distance(query, centroid, d);
-                        cluster_dists[i] = {dist, i};
-                    }
-
-                    std::partial_sort(cluster_dists.begin(),
-                                      cluster_dists.begin() + nprobe,
-                                      cluster_dists.end());
-
-                    for (size_t c = 0; c < nprobe; ++c) {
-                        size_t cluster = cluster_dists[c].second;
-                        size_t offset = cluster_vector_offsets_[cluster];
-                        size_t list_size = cluster_vector_sizes_[cluster];
-
-                        const float* cluster_data = cluster_vectors_.data() + offset * d;
-                        const size_t* cluster_ids = cluster_original_ids_.data() + offset;
-
-                        for (size_t j = 0; j < list_size; ++j) {
-                            const float* vec = cluster_data + j * d;
-                            float dist = distance::compute_l2_distance(query, vec, d);
-
-                            if (dist < q_dists[k - 1]) {
-                                size_t pos = k - 1;
-                                while (pos > 0 && dist < q_dists[pos - 1]) {
-                                    q_dists[pos] = q_dists[pos - 1];
-                                    q_labels[pos] = q_labels[pos - 1];
-                                    pos--;
-                                }
-                                q_dists[pos] = dist;
-                                q_labels[pos] = cluster_ids[j];
-                            }
-                        }
-                    }
-
-                    for (size_t i = 0; i < k; ++i) {
-                        if (q_dists[i] == std::numeric_limits<float>::max()) {
-                            q_dists[i] = 0.0f;
-                            q_labels[i] = 0;
-                        }
-                    }
-                }
-            });
-        }
-
-        for (auto& thread : threads) {
-            thread.join();
         }
     }
 }

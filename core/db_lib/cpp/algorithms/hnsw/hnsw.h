@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
 
 namespace vectordb {
 namespace algorithms {
@@ -23,25 +24,63 @@ private:
     std::vector<int32_t> levels_;
     std::vector<std::vector<int32_t>> neighbors_;
 
+    mutable std::vector<uint32_t> neighbors_compact_;
+    mutable std::vector<uint16_t> neighbor_counts_;
+    mutable size_t compact_slot_size_;
+    mutable size_t compact_level_offsets_[32];
+    mutable bool compact_ready_;
+
+    mutable std::vector<float> norms_;
+
     std::mt19937 rng_;
     std::uniform_real_distribution<float> uniform_;
 
     std::vector<int32_t> insert_visited_;
     int32_t insert_visit_mark_;
 
+    struct SearchState {
+        std::vector<int32_t> visited;
+        int32_t visit_mark;
+    };
+
+    mutable std::vector<SearchState> search_states_;
+
     size_t random_level();
 
-    void search_layer(const float* query,
-                      std::vector<float>& result_dists,
-                      std::vector<int32_t>& result_ids,
-                      const int32_t* entry_points,
-                      size_t n_entry,
-                      size_t ef,
-                      size_t level,
-                      int32_t* visited,
-                      int32_t visit_mark,
-                      std::vector<std::pair<float, int32_t>>& candidates,
-                      std::vector<std::pair<float, int32_t>>& results) const;
+    void build_compact_neighbors() const;
+    void precompute_norms() const;
+
+    void search_layer_impl(const float* query,
+                           float query_norm,
+                           size_t ef,
+                           size_t level,
+                           const int32_t* entry_points,
+                           size_t n_entry,
+                           float* out_dists,
+                           int32_t* out_ids,
+                           size_t* out_count,
+                           int32_t* visited,
+                           int32_t visit_mark) const;
+
+    void search_layer_impl_no_blas(const float* query,
+                                   size_t ef,
+                                   size_t level,
+                                   const int32_t* entry_points,
+                                   size_t n_entry,
+                                   float* out_dists,
+                                   int32_t* out_ids,
+                                   size_t* out_count,
+                                   int32_t* visited,
+                                   int32_t visit_mark) const;
+
+    void select_neighbors_heuristic(const float* query,
+                                    size_t idx,
+                                    const float* cand_dists,
+                                    const int32_t* cand_ids,
+                                    size_t n_candidates,
+                                    size_t M_max,
+                                    int32_t* selected,
+                                    size_t* n_selected) const;
 
     void insert_node(size_t idx);
 

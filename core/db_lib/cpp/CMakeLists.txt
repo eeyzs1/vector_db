@@ -53,6 +53,9 @@ pybind11_add_module(_ivf
 target_link_libraries(_ivf PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_ivf PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_ivf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/ivf

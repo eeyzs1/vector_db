@@ -2,7 +2,7 @@
 #include <stdexcept>
 #include <limits>
 #include <cstring>
-#include <queue>
+#include <algorithm>
 
 namespace vectordb {
 namespace algorithms {
@@ -174,94 +174,20 @@ void IndexLSH::add(size_t n, const float* x) {
     }
 }
 
-inline float compute_l2_dist_avx2(const float* query, const float* vec, size_t dim) {
-#if defined(__AVX512F__)
-    if (dim >= 16) {
-        __m512 sum = _mm512_setzero_ps();
-        size_t i = 0;
-        size_t end = dim - 15;
-        while (i < end) {
-            __m512 q = _mm512_loadu_ps(query + i);
-            __m512 v = _mm512_loadu_ps(vec + i);
-            __m512 diff = _mm512_sub_ps(q, v);
-            sum = _mm512_fmadd_ps(diff, diff, sum);
-            i += 16;
-        }
-        float dist = _mm512_reduce_add_ps(sum);
-        for (; i < dim; ++i) {
-            float diff = query[i] - vec[i];
-            dist += diff * diff;
-        }
-        return dist;
-    }
-#endif
-#if defined(__AVX2__)
-    if (dim >= 8) {
-        __m256 sum0 = _mm256_setzero_ps();
-        __m256 sum1 = _mm256_setzero_ps();
-        size_t i = 0;
-        for (; i + 31 < dim; i += 32) {
-            __m256 q0 = _mm256_loadu_ps(query + i);
-            __m256 v0 = _mm256_loadu_ps(vec + i);
-            __m256 diff0 = _mm256_sub_ps(q0, v0);
-            sum0 = _mm256_fmadd_ps(diff0, diff0, sum0);
-            __m256 q1 = _mm256_loadu_ps(query + i + 8);
-            __m256 v1 = _mm256_loadu_ps(vec + i + 8);
-            __m256 diff1 = _mm256_sub_ps(q1, v1);
-            sum1 = _mm256_fmadd_ps(diff1, diff1, sum1);
-            __m256 q2 = _mm256_loadu_ps(query + i + 16);
-            __m256 v2 = _mm256_loadu_ps(vec + i + 16);
-            __m256 diff2 = _mm256_sub_ps(q2, v2);
-            sum0 = _mm256_fmadd_ps(diff2, diff2, sum0);
-            __m256 q3 = _mm256_loadu_ps(query + i + 24);
-            __m256 v3 = _mm256_loadu_ps(vec + i + 24);
-            __m256 diff3 = _mm256_sub_ps(q3, v3);
-            sum1 = _mm256_fmadd_ps(diff3, diff3, sum1);
-        }
-        sum0 = _mm256_add_ps(sum0, sum1);
-        for (; i + 7 < dim; i += 8) {
-            __m256 q = _mm256_loadu_ps(query + i);
-            __m256 v = _mm256_loadu_ps(vec + i);
-            __m256 diff = _mm256_sub_ps(q, v);
-            sum0 = _mm256_fmadd_ps(diff, diff, sum0);
-        }
-        __m256 shuffled = _mm256_permute2f128_ps(sum0, sum0, 0x21);
-        __m256 summed = _mm256_add_ps(sum0, shuffled);
-        summed = _mm256_hadd_ps(summed, summed);
-        summed = _mm256_hadd_ps(summed, summed);
-        float dist = _mm256_cvtss_f32(summed);
-        for (; i < dim; ++i) {
-            float diff = query[i] - vec[i];
-            dist += diff * diff;
-        }
-        return dist;
-    }
-#endif
-    float dist = 0.0f;
-    for (size_t i = 0; i < dim; ++i) {
-        float diff = query[i] - vec[i];
-        dist += diff * diff;
-    }
-    return dist;
-}
-
-struct HeapItem {
-    float dist;
-    size_t idx;
-    bool operator<(const HeapItem& other) const { return dist < other.dist; }
-};
-
 void IndexLSH::search(size_t n, const float* x, size_t k, float* distances, size_t* labels) const {
     std::vector<size_t> candidates;
     candidates.reserve(1024);
 
-    std::vector<size_t> seen(ntotal, 0);
-    size_t query_id = 0;
+    std::vector<int32_t> seen(ntotal, 0);
+    int32_t query_id = 0;
 
     std::vector<float, AlignedAllocator<float, 64>> padded_query(padded_dim_);
 
     size_t max_probes_per_table = num_probes_;
     std::vector<size_t> probe_hashes(max_probes_per_table);
+
+    std::vector<std::pair<float, size_t>> heap;
+    heap.reserve(k + 1);
 
     for (size_t q = 0; q < n; ++q) {
         const float* query = x + q * d;
@@ -320,30 +246,33 @@ void IndexLSH::search(size_t n, const float* x, size_t k, float* distances, size
 
         const float* base_data = data();
 
-        std::priority_queue<HeapItem> heap;
-        float max_dist = std::numeric_limits<float>::max();
+        heap.clear();
+        float cutoff = std::numeric_limits<float>::max();
 
         for (size_t i = 0; i < n_candidates; ++i) {
             size_t idx = candidates[i];
-            float dist = compute_l2_dist_avx2(query, base_data + idx * d, d);
+            float dist = distance::compute_l2_distance(query, base_data + idx * d, d);
 
-            if (heap.size() < k) {
-                heap.push({dist, idx});
-                if (heap.size() == k) {
-                    max_dist = heap.top().dist;
+            if (dist < cutoff) {
+                if (heap.size() < k) {
+                    heap.push_back({dist, idx});
+                    std::push_heap(heap.begin(), heap.end(), std::greater<>());
+                    if (heap.size() >= k) cutoff = heap.front().first;
+                } else {
+                    std::pop_heap(heap.begin(), heap.end(), std::greater<>());
+                    heap.back() = {dist, idx};
+                    std::push_heap(heap.begin(), heap.end(), std::greater<>());
+                    cutoff = heap.front().first;
                 }
-            } else if (dist < max_dist) {
-                heap.pop();
-                heap.push({dist, idx});
-                max_dist = heap.top().dist;
             }
         }
 
+        std::sort(heap.begin(), heap.end());
+
         size_t n_results = heap.size();
-        for (size_t i = n_results; i > 0; --i) {
-            distances[q * k + i - 1] = heap.top().dist;
-            labels[q * k + i - 1] = heap.top().idx;
-            heap.pop();
+        for (size_t i = 0; i < n_results; ++i) {
+            distances[q * k + i] = heap[i].first;
+            labels[q * k + i] = heap[i].second;
         }
         for (size_t i = n_results; i < k; ++i) {
             distances[q * k + i] = 0.0f;

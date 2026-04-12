@@ -95,7 +95,7 @@ class TestBasicOperations:
         
         # Check that labels are valid indices
         assert np.all(labels >= 0)
-        assert np.all(labels &lt; sample_vectors.shape[0])
+        assert np.all(labels < sample_vectors.shape[0])
         
         index.close()
 
@@ -182,7 +182,7 @@ class TestCorrectnessAgainstFAISS:
         np.testing.assert_array_equal(our_labels, faiss_labels)
         # Distances should be very close (note: FAISS returns similarity, not distance)
         # For IP, higher = better, so we need to check the ordering
-        np.testing.assert_allclose(our_distances, -faiss_distances if our_distances[0, 0] &lt; 0 else our_distances, rtol=1e-5)
+        np.testing.assert_allclose(our_distances, -faiss_distances if our_distances[0, 0] < 0 else our_distances, rtol=1e-5)
 
 
 class TestBoundaryConditions:
@@ -245,7 +245,7 @@ class TestBoundaryConditions:
         
         assert labels[0, 0] == 0
         # Distance should be very close to zero
-        assert distances[0, 0] &lt; 1e-6
+        assert distances[0, 0] < 1e-6
         
         index.close()
     
