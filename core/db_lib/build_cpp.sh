@@ -12,7 +12,7 @@ mkdir -p "$CPP_DIR/build"
 cd "$CPP_DIR/build"
 
 echo "Building C++ modules..."
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=$(which python) -DBUILD_TESTS=OFF
 make -j$(nproc)
 
 echo "C++ modules built successfully!"

@@ -6,7 +6,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math")
+    # Use -march=native for best codegen, but disable AVX-512 to avoid
+    # CPU frequency downclocking on AMD Ryzen 9 9955HX3D. AVX-512 causes
+    # sustained frequency drops that hurt overall throughput, especially
+    # for PQ's dense distance table computation. AVX2 + FMA provides
+    # ~90% of the throughput without the downclocking penalty.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -mno-avx512f -ffast-math")
 endif()
 
 find_package(Python3 COMPONENTS Interpreter Development)

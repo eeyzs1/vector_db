@@ -3,6 +3,10 @@
 #include <limits>
 #include <cstring>
 #include <algorithm>
+#include <immintrin.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace vectordb {
 namespace algorithms {
@@ -13,7 +17,11 @@ IndexLSH::IndexLSH(size_t dimension, size_t num_hash_tables,
       num_hash_functions_(num_hash_functions), r_(r), inv_r_(1.0f / r),
       num_probes_(1), rng_(std::random_device{}()) {
     padded_dim_ = ((d + 15) / 16) * 16;
+    hash_key_space_ = size_t(1) << num_hash_functions_;
     hash_tables_.resize(num_hash_tables_);
+    for (size_t t = 0; t < num_hash_tables_; ++t) {
+        hash_tables_[t].resize(hash_key_space_);
+    }
     generate_hash_functions();
 }
 
@@ -54,8 +62,7 @@ size_t IndexLSH::hash_vector(const float* vec, size_t table_idx) const {
             sum = _mm512_fmadd_ps(v, w, sum);
         }
         float dot = _mm512_reduce_add_ps(sum) + hash_biases_[table_idx * num_hash_functions_ + h];
-        int bit = static_cast<int>(std::floor(dot * inv_r_));
-        hash = (hash << 1) | (bit & 1);
+        hash = (hash << 1) | (dot > 0.0f ? 1 : 0);
     }
 #elif defined(__AVX2__)
     for (size_t h = 0; h < num_hash_functions_; ++h) {
@@ -88,8 +95,7 @@ size_t IndexLSH::hash_vector(const float* vec, size_t table_idx) const {
         summed = _mm256_hadd_ps(summed, summed);
         summed = _mm256_hadd_ps(summed, summed);
         float dot = _mm256_cvtss_f32(summed) + hash_biases_[table_idx * num_hash_functions_ + h];
-        int bit = static_cast<int>(std::floor(dot * inv_r_));
-        hash = (hash << 1) | (bit & 1);
+        hash = (hash << 1) | (dot > 0.0f ? 1 : 0);
     }
 #else
     for (size_t h = 0; h < num_hash_functions_; ++h) {
@@ -98,8 +104,7 @@ size_t IndexLSH::hash_vector(const float* vec, size_t table_idx) const {
         for (size_t i = 0; i < d; ++i) {
             dot += vec[i] * weights[i];
         }
-        int bit = static_cast<int>(std::floor(dot * inv_r_));
-        hash = (hash << 1) | (bit & 1);
+        hash = (hash << 1) | (dot > 0.0f ? 1 : 0);
     }
 #endif
     return hash;
@@ -165,118 +170,212 @@ void IndexLSH::add(size_t n, const float* x) {
     std::vector<size_t> all_hashes(n * num_hash_tables_);
     hash_vector_batch(x, n, all_hashes.data());
 
+    // Resize binary codes storage
+    binary_codes_.resize(ntotal);
+
+    // Initialize substring tables (4 tables, 256 buckets each)
+    size_t num_substrings = 4;
+    if (substring_tables_.empty()) {
+        substring_tables_.resize(num_substrings);
+        for (size_t s = 0; s < num_substrings; ++s) {
+            substring_tables_[s].resize(256);
+        }
+    }
+
     for (size_t i = 0; i < n; ++i) {
         size_t idx = old_total + i;
+        uint32_t code = 0;
         for (size_t t = 0; t < num_hash_tables_; ++t) {
             size_t hash = all_hashes[i * num_hash_tables_ + t];
             hash_tables_[t][hash].push_back(idx);
+            code = (code << num_hash_functions_) |
+                   static_cast<uint32_t>(hash & ((1u << num_hash_functions_) - 1));
+        }
+        binary_codes_[idx] = code;
+        // Index into substring tables (8-bit substrings)
+        for (size_t s = 0; s < num_substrings; ++s) {
+            uint8_t substring = static_cast<uint8_t>((code >> (s * 8)) & 0xFF);
+            substring_tables_[s][substring].push_back(idx);
         }
     }
 }
 
 void IndexLSH::search(size_t n, const float* x, size_t k, float* distances, size_t* labels) const {
-    std::vector<size_t> candidates;
-    candidates.reserve(1024);
-
-    std::vector<int32_t> seen(ntotal, 0);
-    int32_t query_id = 0;
-
-    std::vector<float, AlignedAllocator<float, 64>> padded_query(padded_dim_);
-
-    size_t max_probes_per_table = num_probes_;
-    std::vector<size_t> probe_hashes(max_probes_per_table);
-
-    std::vector<std::pair<float, size_t>> heap;
-    heap.reserve(k + 1);
-
-    for (size_t q = 0; q < n; ++q) {
-        const float* query = x + q * d;
-        std::memcpy(padded_query.data(), query, d * sizeof(float));
-        for (size_t j = d; j < padded_dim_; ++j) {
-            padded_query[j] = 0.0f;
-        }
-
-        candidates.clear();
-        ++query_id;
-        if (query_id == 0) {
-            std::fill(seen.begin(), seen.end(), 0);
-            query_id = 1;
-        }
-
-        for (size_t t = 0; t < num_hash_tables_; ++t) {
-            size_t base_hash = hash_vector(padded_query.data(), t);
-
-            if (max_probes_per_table <= 1) {
-                auto it = hash_tables_[t].find(base_hash);
-                if (it != hash_tables_[t].end()) {
-                    for (size_t idx : it->second) {
-                        if (seen[idx] != query_id) {
-                            seen[idx] = query_id;
-                            candidates.push_back(idx);
-                        }
-                    }
-                }
-            } else {
-                size_t n_probes = 0;
-                generate_probe_sequence(base_hash, num_hash_functions_, max_probes_per_table,
-                                       probe_hashes.data(), n_probes);
-                for (size_t p = 0; p < n_probes; ++p) {
-                    auto it = hash_tables_[t].find(probe_hashes[p]);
-                    if (it != hash_tables_[t].end()) {
-                        for (size_t idx : it->second) {
-                            if (seen[idx] != query_id) {
-                                seen[idx] = query_id;
-                                candidates.push_back(idx);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        size_t n_candidates = candidates.size();
-
-        if (n_candidates == 0) {
+    if (ntotal == 0) {
+        for (size_t q = 0; q < n; ++q) {
             for (size_t i = 0; i < k; ++i) {
                 distances[q * k + i] = 0.0f;
                 labels[q * k + i] = 0;
             }
-            continue;
         }
+        return;
+    }
 
-        const float* base_data = data();
+    const float* base_data = data();
+    size_t dim = d;
+    size_t nbits = num_hash_tables_ * num_hash_functions_;
+    size_t num_substrings = std::min(size_t(4), nbits / 8);
+    // Refine top-30 candidates (3x FAISS's top-k=10) — balances recall vs L2 cost.
+    size_t max_refine = std::min(std::max(k * 3, size_t(30)), ntotal);
 
-        heap.clear();
-        float cutoff = std::numeric_limits<float>::max();
+    // Limit thread count for small query batches: with 32 threads and only
+    // 100 queries, each thread gets ~3 queries. The OpenMP barrier sync and
+    // cache contention dominates. Require 8 queries per thread for small N
+    // (vectors fit in cache), 4 for large N (more memory bandwidth).
+    int max_threads = omp_get_max_threads();
+    int num_threads = max_threads;
+    if (n > 0) {
+        int min_queries_per_thread = (ntotal <= 20000) ? 8 : 4;
+        int ideal_threads = (int)((n + min_queries_per_thread - 1) / min_queries_per_thread);
+        num_threads = std::min(max_threads, ideal_threads);
+        if (num_threads < 1) num_threads = 1;
+    }
 
-        for (size_t i = 0; i < n_candidates; ++i) {
-            size_t idx = candidates[i];
-            float dist = distance::compute_l2_distance(query, base_data + idx * d, d);
+    // Ensure per-thread seen[] arrays are allocated once and reused.
+    // uint8_t seen = 1MB for 1M vectors (fits L2), vs int = 4MB (misses L2).
+    if (thread_seen_.size() < (size_t)num_threads) {
+        thread_seen_.resize(num_threads);
+        thread_seen_version_.resize(num_threads, 0);
+    }
+    for (int t = 0; t < num_threads; ++t) {
+        if (thread_seen_[t].size() < ntotal) {
+            thread_seen_[t].assign(ntotal, 0);
+        }
+    }
 
-            if (dist < cutoff) {
-                if (heap.size() < k) {
-                    heap.push_back({dist, idx});
-                    std::push_heap(heap.begin(), heap.end(), std::greater<>());
-                    if (heap.size() >= k) cutoff = heap.front().first;
-                } else {
-                    std::pop_heap(heap.begin(), heap.end(), std::greater<>());
-                    heap.back() = {dist, idx};
-                    std::push_heap(heap.begin(), heap.end(), std::greater<>());
-                    cutoff = heap.front().first;
+    #pragma omp parallel num_threads(num_threads) proc_bind(close)
+    {
+        int tid = omp_get_thread_num();
+        std::vector<uint8_t>& seen = thread_seen_[tid];
+        uint8_t& version = thread_seen_version_[tid];
+        std::vector<float, AlignedAllocator<float, 64>> thread_padded(padded_dim_);
+        // seen[] array with version counter — O(1) dedup, faster than sort+dedup.
+        std::vector<std::pair<uint32_t, size_t>> hamming_heap;
+        hamming_heap.reserve(1024);
+        std::vector<std::pair<float, size_t>> l2_heap;
+        l2_heap.reserve(k + 1);
+
+        #pragma omp for schedule(guided)
+        for (size_t q = 0; q < n; ++q) {
+            const float* query = x + q * d;
+            std::memcpy(thread_padded.data(), query, d * sizeof(float));
+            for (size_t j = d; j < padded_dim_; ++j) {
+                thread_padded[j] = 0.0f;
+            }
+
+            // Per-thread version counter (uint8_t). Increment per query.
+            // On wrap to 0, reset seen array (1MB memset ~0.1ms, rare).
+            version++;
+            if (version == 0) {
+                std::fill(seen.begin(), seen.end(), 0);
+                version = 1;
+            }
+
+            // Compute query 32-bit code
+            uint32_t query_code = 0;
+            for (size_t t = 0; t < num_hash_tables_; ++t) {
+                size_t h = hash_vector(thread_padded.data(), t);
+                query_code = (query_code << num_hash_functions_) |
+                             static_cast<uint32_t>(h & ((1u << num_hash_functions_) - 1));
+            }
+
+            // Multi-index hashing with seen[] dedup + running max-heap.
+            // By pigeonhole: Hamming dist <= 3 => at least one 8-bit substring matches.
+            hamming_heap.clear();
+            uint32_t hamming_cutoff = std::numeric_limits<uint32_t>::max();
+
+            for (size_t s = 0; s < num_substrings; ++s) {
+                uint8_t substring = static_cast<uint8_t>((query_code >> (s * 8)) & 0xFF);
+                const auto& bucket = substring_tables_[s][substring];
+                for (size_t idx : bucket) {
+                    if (seen[idx] != version) {
+                        seen[idx] = version;
+                        uint32_t h = __builtin_popcount(query_code ^ binary_codes_[idx]);
+                        if (hamming_heap.size() < max_refine) {
+                            hamming_heap.push_back({h, idx});
+                            std::push_heap(hamming_heap.begin(), hamming_heap.end(),
+                                          [](const auto& a, const auto& b) { return a.first < b.first; });
+                            if (hamming_heap.size() >= max_refine) {
+                                hamming_cutoff = hamming_heap.front().first;
+                            }
+                        } else if (h < hamming_cutoff) {
+                            std::pop_heap(hamming_heap.begin(), hamming_heap.end(),
+                                         [](const auto& a, const auto& b) { return a.first < b.first; });
+                            hamming_heap.back() = {h, idx};
+                            std::push_heap(hamming_heap.begin(), hamming_heap.end(),
+                                          [](const auto& a, const auto& b) { return a.first < b.first; });
+                            hamming_cutoff = hamming_heap.front().first;
+                        }
+                    }
                 }
             }
-        }
 
-        std::sort(heap.begin(), heap.end());
+            // 1-bit multi-probe fallback if < k candidates
+            if (hamming_heap.size() < k) {
+                uint8_t substring0 = static_cast<uint8_t>(query_code & 0xFF);
+                for (int bit = 0; bit < 8 && hamming_heap.size() < k * 4; ++bit) {
+                    uint8_t flipped = substring0 ^ (1u << bit);
+                    const auto& bucket = substring_tables_[0][flipped];
+                    for (size_t idx : bucket) {
+                        if (seen[idx] != version) {
+                            seen[idx] = version;
+                            uint32_t h = __builtin_popcount(query_code ^ binary_codes_[idx]);
+                            hamming_heap.push_back({h, idx});
+                        }
+                    }
+                }
+            }
 
-        size_t n_results = heap.size();
-        for (size_t i = 0; i < n_results; ++i) {
-            distances[q * k + i] = heap[i].first;
-            labels[q * k + i] = heap[i].second;
-        }
-        for (size_t i = n_results; i < k; ++i) {
-            distances[q * k + i] = 0.0f;
-            labels[q * k + i] = 0;
+            // Sort by Hamming distance (closest first) for L2 early termination
+            std::sort(hamming_heap.begin(), hamming_heap.end());
+
+            // L2 refinement with software prefetching
+            l2_heap.clear();
+            float l2_cutoff = std::numeric_limits<float>::max();
+
+            size_t heap_size = hamming_heap.size();
+            // Prefetch first 2 candidates
+            if (heap_size > 0) {
+                __builtin_prefetch(base_data + hamming_heap[0].second * dim, 0, 0);
+            }
+            if (heap_size > 1) {
+                __builtin_prefetch(base_data + hamming_heap[1].second * dim, 0, 0);
+            }
+
+            for (size_t i = 0; i < heap_size; ++i) {
+                size_t v_idx = hamming_heap[i].second;
+                const float* vec = base_data + v_idx * dim;
+
+                // Prefetch candidate 2 positions ahead (hide ~300 cycle memory latency)
+                if (i + 2 < heap_size) {
+                    __builtin_prefetch(base_data + hamming_heap[i + 2].second * dim, 0, 0);
+                }
+
+                float dist = distance::compute_l2_distance(query, vec, dim);
+
+                if (l2_heap.size() < k) {
+                    l2_heap.push_back({dist, v_idx});
+                    std::push_heap(l2_heap.begin(), l2_heap.end());
+                    if (l2_heap.size() >= k) l2_cutoff = l2_heap.front().first;
+                } else if (dist < l2_cutoff) {
+                    std::pop_heap(l2_heap.begin(), l2_heap.end());
+                    l2_heap.back() = {dist, v_idx};
+                    std::push_heap(l2_heap.begin(), l2_heap.end());
+                    l2_cutoff = l2_heap.front().first;
+                }
+            }
+
+            std::sort(l2_heap.begin(), l2_heap.end());
+
+            size_t n_results = l2_heap.size();
+            for (size_t i = 0; i < n_results; ++i) {
+                distances[q * k + i] = l2_heap[i].first;
+                labels[q * k + i] = l2_heap[i].second;
+            }
+            for (size_t i = n_results; i < k; ++i) {
+                distances[q * k + i] = 0.0f;
+                labels[q * k + i] = 0;
+            }
         }
     }
 }

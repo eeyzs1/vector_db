@@ -2,5 +2,6 @@
     "python-envs.pythonProjects": [
         
     ],
-    "cmake.sourceDirectory": "cpp"
+    "cmake.sourceDirectory": "cpp",
+    "cmake.ignoreCMakeListsMissing": true
 }

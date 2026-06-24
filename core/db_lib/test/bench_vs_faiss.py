@@ -359,11 +359,62 @@ def bench_lsh():
               f"{format_time(search_cpp):>10} {format_time(search_faiss):>12} {search_spd:>6.2f}x | {recall_cpp:>5.1%} {recall_faiss:>6.1%}")
 
 
+import subprocess
+import sys
+
+
+BENCH_FUNCTIONS = [
+    ('bench_flat_l2', 'FlatL2'),
+    ('bench_flat_ip', 'FlatIP'),
+    ('bench_hnsw', 'HNSW'),
+    ('bench_ivf', 'IVF'),
+    ('bench_pq', 'PQ'),
+    ('bench_lsh', 'LSH'),
+]
+
+
+def run_isolated():
+    """Run each benchmark in a separate process to avoid thermal throttling
+    and cache pollution between algorithms. This gives the most reliable
+    comparison between C++ and FAISS."""
+    print("=" * 90)
+    print("  COMPREHENSIVE BENCHMARK: C++ vs FAISS (ISOLATED MODE)")
+    print("  Each algorithm runs in a separate process with cooldown")
+    print(f"  FAISS version: {faiss.__version__ if hasattr(faiss, '__version__') else 'unknown'}")
+    print(f"  Warmup: {N_WARMUP} runs, Average over: {N_RUNS} runs")
+    print("=" * 90)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for func_name, label in BENCH_FUNCTIONS:
+        print(f"\n--- Running {label} in isolated process ---")
+        cmd = [
+            sys.executable, '-c',
+            f"import sys,os; sys.path.insert(0, os.path.abspath({repr(os.path.join(script_dir, '..', 'python'))})); "
+            f"sys.path.insert(0, {repr(script_dir)}); "
+            f"import bench_vs_faiss as b; b.{func_name}()"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir)
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        # Cooldown between algorithms to let CPU return to base frequency
+        time.sleep(2)
+
+    print('\n' + "=" * 90)
+    print("  BENCHMARK COMPLETE (ISOLATED MODE)")
+    print("=" * 90)
+
+
 def main():
+    if '--isolated' in sys.argv:
+        run_isolated()
+        return
+
     print("=" * 90)
     print("  COMPREHENSIVE BENCHMARK: C++ vs FAISS")
     print(f"  FAISS version: {faiss.__version__ if hasattr(faiss, '__version__') else 'unknown'}")
     print(f"  Warmup: {N_WARMUP} runs, Average over: {N_RUNS} runs")
+    print("  Tip: Use --isolated for more reliable results (separate process per algorithm)")
     print("=" * 90)
 
     bench_flat_l2()

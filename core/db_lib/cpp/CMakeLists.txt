@@ -98,6 +98,9 @@ pybind11_add_module(_lsh
 target_link_libraries(_lsh PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_lsh PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_lsh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/lsh
@@ -134,6 +137,9 @@ pybind11_add_module(_flat
 target_link_libraries(_flat PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_flat PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_flat PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/flat
@@ -146,6 +152,9 @@ pybind11_add_module(_flat_ip
 target_link_libraries(_flat_ip PRIVATE
     vectordb_core
 )
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_flat_ip PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(_flat_ip PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithms/flat_ip
